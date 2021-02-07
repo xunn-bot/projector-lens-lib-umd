@@ -4,12 +4,16 @@
 // ? https://nodejs.org/en/about/releases
 const NODE_LTS = 'maintained node versions';
 
+const debug = require('debug')(`${require('./package.json').name}:babel-config`);
+
 module.exports = {
   parserOpts: { strictMode: true },
   plugins: [
     '@babel/plugin-proposal-export-default-from',
     '@babel/plugin-proposal-function-bind',
-    '@babel/plugin-transform-typescript'
+    '@babel/plugin-transform-typescript',
+    // ? Interoperable named CJS imports for free
+    'babel-plugin-transform-default-named-imports'
   ],
   // ? Sub-keys under the "env" config key will augment the above
   // ? configuration depending on the value of NODE_ENV and friends. Default
@@ -47,7 +51,7 @@ module.exports = {
         // ? Webpack will handle minification
       ]
     },
-    // * Used for compiling ESM code into ./dist/lib/
+    // * Used for compiling ESM code output somewhere in ./dist
     esm: {
       presets: [
         [
@@ -62,9 +66,20 @@ module.exports = {
         // ? The end user will handle minification
       ],
       plugins: [
-        // ? Interoperable named CJS imports for free
-        'babel-plugin-transform-mjs-imports'
+        // ? Ensure all local imports without extensions now end in .mjs
+        ['add-import-extension', { extension: 'mjs' }],
+        // ? Fix relative local imports referencing package.json (.dist/esm/...)
+        [
+          'transform-rename-import',
+          {
+            replacements: [
+              { original: '../package.json', replacement: '../../package.json' }
+            ]
+          }
+        ]
       ]
     }
   }
 };
+
+debug('exports: %O', module.exports);

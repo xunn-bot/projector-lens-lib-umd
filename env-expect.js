@@ -1,5 +1,7 @@
 /* eslint-disable no-console */
 
+const debug = require('debug')(`${require('./package.json').name}:env-expect`);
+
 const DEFAULT_VALUE_REGEX = [/^.*$/, /.*/];
 
 class IllegalEnvironmentError extends Error {}
@@ -11,9 +13,12 @@ module.exports = {
    * `rules` is not defined, the "rules" defined under the "env-expect" key in
    * ./package.json are used instead.
    *
+   * Below, "name" is the name of an environment variable and "value" is its
+   * expected value.
+   *
    * Each rule can be one of:
    *
-   * (1) A regex STRING interpreted as RegExp(`^${STRING}$`)
+   * (1) A simple STRING variable "name" interpreted as RegExp(`^${STRING}$`)
    *
    * (2) An OBJECT where "name" and "value" are both regex STRINGs; "required"
    * is optional and defaults to `true`; and "errorMessage" is optional:
@@ -65,14 +70,19 @@ module.exports = {
     let errorMessage = null;
 
     const normalize = (rule) => {
+      let normalizedRule;
       const makeErrorMessage = (reason) => `missing dep: ${reason}`;
 
-      if (typeof rule == 'string' || rule instanceof RegExp) {
-        rule = rule.startsWith('^') ? rule.slice(1) : rule;
-        rule = rule.startsWith('$') ? rule.slice(0, -1) : rule;
-        rule = RegExp(`^${rule}$`);
+      debug('::normalize (not normalized): %O', rule);
 
-        return {
+      if (typeof rule == 'string' || rule instanceof RegExp) {
+        if (typeof rule == 'string') {
+          rule = rule.startsWith('^') ? rule.slice(1) : rule;
+          rule = rule.startsWith('$') ? rule.slice(0, -1) : rule;
+          rule = RegExp(`^${rule}$`);
+        }
+
+        normalizedRule = {
           operation: 'or',
           variables: [{ name: rule, value: DEFAULT_VALUE_REGEX[0] }],
           required: true,
@@ -82,12 +92,16 @@ module.exports = {
             )
           )
         };
-      } else if (typeof rule.name == 'string') {
-        rule.name = RegExp(rule.name);
+      } else if (typeof rule.name == 'string' || rule.name instanceof RegExp) {
+        rule.name = rule.name instanceof RegExp ? rule.name : RegExp(rule.name);
         rule.value =
-          typeof rule.value == 'string' ? RegExp(rule.value) : DEFAULT_VALUE_REGEX[0];
+          typeof rule.value == 'string'
+            ? RegExp(rule.value)
+            : rule.value instanceof RegExp
+            ? rule.value
+            : DEFAULT_VALUE_REGEX[0];
 
-        return {
+        normalizedRule = {
           operation: 'or',
           variables: [{ name: rule.name, value: rule.value }],
           required: typeof rule.required == 'undefined' || !!rule.required,
@@ -112,13 +126,12 @@ module.exports = {
         const opString = not ? '    ' : `${rule.operation} `;
 
         const makeSubstr = (name, value) =>
-          `name ${not ? 'NOT ' : ''}matching regex ${name}${
-            DEFAULT_VALUE_REGEX.map(String).includes(value?.toString())
-              ? ''
-              : ` and value ${not ? 'NOT ' : ''}matching regex ` + value
-          }`;
+          `name ${not ? 'NOT ' : ''}matching regex ${name}` +
+          (DEFAULT_VALUE_REGEX.map(String).includes((value || '').toString())
+            ? ''
+            : ` and value ${not ? 'NOT ' : ''}matching regex ${value}`);
 
-        return {
+        normalizedRule = {
           operation: rule.operation,
           variables,
           required: typeof rule.required == 'undefined' || !!rule.required,
@@ -143,12 +156,16 @@ module.exports = {
           )
         };
       } else {
+        debug('::normalize BAD RULE ENCOUNTERED: %O', rule);
         throw new IllegalEnvironmentError(
           `bad rule encountered${
             fromPkg ? ' in ./package.json "env-expect"' : ''
           }: ${JSON.stringify(rule, undefined, 2)}`
         );
       }
+
+      debug('::normalize (normalized): %O', normalizedRule);
+      return normalizedRule;
     };
 
     if (!rules) {
@@ -159,6 +176,9 @@ module.exports = {
         fromPkg = true;
       } catch (ignored) {}
     }
+
+    debug('rules: %O', rules);
+    debug('errorMessage: %O', errorMessage);
 
     if (typeof rules == 'undefined') return [];
 
@@ -231,6 +251,7 @@ module.exports = {
         !errorMessage ? 'environment verification failed' : errorMessage
       );
 
+    debug('violated rules: %O', violations);
     return violations;
   }
 };

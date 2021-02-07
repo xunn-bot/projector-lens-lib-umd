@@ -1,7 +1,19 @@
-const SHOULD_UPDATE_CHANGELOG = process.env.SHOULD_UPDATE_CHANGELOG === 'true';
+const debug = require('debug')(
+  `${require('./package.json').name}:semantic-release-config`
+);
 
-const options = require('./.changelogrc.js');
-const { changelogTitle, parserOpts, writerOpts } = options;
+const SHOULD_UPDATE_CHANGELOG = process.env.SHOULD_UPDATE_CHANGELOG === 'true';
+const SHOULD_DEPLOY = process.env.SHOULD_DEPLOY === 'true';
+
+debug(`SHOULD_UPDATE_CHANGELOG:${SHOULD_UPDATE_CHANGELOG}`);
+debug(`SHOULD_DEPLOY:${SHOULD_DEPLOY}`);
+
+const {
+  changelogTitle,
+  parserOpts,
+  writerOpts,
+  additionalReleaseRules
+} = require('./.changelogrc.js');
 
 module.exports = {
   branches: [
@@ -19,10 +31,7 @@ module.exports = {
       {
         preset: 'angular',
         parserOpts,
-        // ! If you change releaseRules, you should also take a look at:
-        // !   - dependabot.yml
-        // !   - .changelogrc.js
-        releaseRules: [{ type: 'build', release: 'patch' }]
+        releaseRules: additionalReleaseRules
       }
     ],
     [
@@ -45,12 +54,19 @@ module.exports = {
           [
             '@semantic-release/exec',
             {
+              prepareCmd:
+                'remark -o --use reference-links --use gfm --use frontmatter CHANGELOG.md'
+            }
+          ],
+          [
+            '@semantic-release/exec',
+            {
               prepareCmd: 'npx prettier --write CHANGELOG.md'
             }
           ]
         ]
       : []),
-    '@semantic-release/npm',
+    ['@semantic-release/npm'],
     [
       '@semantic-release/git',
       {
@@ -64,6 +80,18 @@ module.exports = {
         message: 'release: ${nextRelease.version} [skip ci]\n\n${nextRelease.notes}'
       }
     ],
-    '@semantic-release/github'
+    ['@semantic-release/github'],
+    ...(SHOULD_DEPLOY
+      ? [
+          [
+            '@semantic-release/exec',
+            {
+              successCmd: 'npm run deploy'
+            }
+          ]
+        ]
+      : [])
   ]
 };
+
+debug('exports: %O', module.exports);

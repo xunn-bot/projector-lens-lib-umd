@@ -4,8 +4,6 @@ about: Tell us about your awesome idea
 labels: 🤩 feature
 ---
 
-### Is your feature request related to a problem? Please describe!
-
 <!--
 Include a clear and concise description of what the problem is. If applicable,
 add screenshots to help explain the problem.

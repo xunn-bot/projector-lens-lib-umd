@@ -2,8 +2,8 @@ name: build-test-deploy
 
 # * Note: feel free to run this workflow in forks (e.g. for testing your PR)
 # * without worrying about this workflow attempting to deploy a package 🚀
-# *
-# * If you want to use the CD pipeline, the following secrets must be defined:
+
+# ! If you want to use the CD pipeline, the following secrets must be defined:
 # !   CODECOV_TOKEN (optional for public repos)
 # !   GPG_PRIVATE_KEY
 # !   GPG_PASSPHRASE
@@ -22,13 +22,17 @@ on:
     branches: [main, canary]
 
 env:
+  # * Selectively enable debugger verbose output in the pipeline
+  # ? See also: https://www.npmjs.com/package/debug#wildcards
+  # DEBUG: '@xunnamius/do-not-install:*'
   NODE_CURRENT_VERSION: 15.x
-  NODE_TEST_VERSIONS: '"10.x", "12.x", "14.x"' # * NODE_CURRENT_VERSION included automatically
-  WEBPACK_TEST_VERSIONS: '"4.x", "5.x"'
+  NODE_TEST_VERSIONS: '"12.x", "14.x"' # * NODE_CURRENT_VERSION included automatically
+  WEBPACK_TEST_VERSIONS: '"5.x"'
   CI_COMMITTER_NAME: xunn-bot
   CI_COMMITTER_EMAIL: bot@xunn.io
-  # ! These also have to be updated in .changelogrc.js
-  CI_SKIP_COMMANDS: '[skip ci], [ci skip], [skip github], [github skip]'
+  # ! These also have to be updated in .changelogrc.js and cleanup.yml
+  CI_SKIP_REGEX: '\[skip ci\]|\[ci skip\]'
+  CD_SKIP_REGEX: '\[skip cd\]|\[cd skip\]'
   # ? Add your GitHub user/org to enable CD pipeline
   # ? (you'll need to provide your own secrets or the pipeline will error)
   REPO_OWNER_WHITELIST: xunnamius, ergodark, nhscc
@@ -39,12 +43,15 @@ jobs:
   metadata:
     name: 'gather-metadata'
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     outputs:
       current-branch: ${{ steps.branch.outputs.current-branch }}
       has-proper-owner: ${{ steps.owner.outputs.is-whitelisted }}
-      should-skip-ci: ${{ steps.skip-ci.outputs.should-skip == 'true' }}
+      should-skip-ci: ${{ steps.skip.outputs.should-skip-ci == 'true' }}
+      should-skip-cd: ${{ steps.skip.outputs.should-skip-cd == 'true' }}
       node-matrix: ${{ steps.set-matrix.outputs.node-matrix }}
       webpack-matrix: ${{ steps.set-matrix.outputs.webpack-matrix }}
+      has-deploy: ${{ steps.data.outputs.has-deploy == 'true' }}
       has-release-config: ${{ steps.data.outputs.has-release-config == 'true' }}
       has-docs: ${{ steps.data.outputs.has-docs == 'true' }}
       has-externals: ${{ steps.data.outputs.has-externals == 'true' }}
@@ -52,44 +59,67 @@ jobs:
         ${{ steps.data.outputs.has-integration-node == 'true' }}
       has-integration-externals:
         ${{ steps.data.outputs.has-integration-externals == 'true' }}
-      has-integration-browser:
-        ${{ steps.data.outputs.has-integration-browser == 'true' }}
+      has-integration-client:
+        ${{ steps.data.outputs.has-integration-client == 'true' }}
       has-integration-webpack:
         ${{ steps.data.outputs.has-integration-webpack == 'true' }}
     steps:
+      - name: Report DEBUG mode status
+        run: |
+          if ! [ -z "$DEBUG" ]; then
+            echo 'PIPELINE IS RUNNING IN DEBUG MODE!'
+          else
+            echo '(pipeline is not running in debug mode)'
+          fi
+
       - name: Checkout
         uses: actions/checkout@v2
         with:
           fetch-depth: 1 # ! We only skip if the tippy top commit says so!
 
-      - name: Gather CI metadata
-        uses: mstachniuk/ci-skip@v1.2.0
-        with:
-          commit-filter: ${{ env.CI_SKIP_COMMANDS }}
-          commit-filter-separator: ', '
-
       - name: Determine should-skip
-        id: skip-ci
-        run: echo "::set-output name=should-skip::$CI_SKIP"
+        id: skip
+        run: |
+          set +e
+          LAST_COMMIT_MSG=$(git log -1 --pretty=format:"%s")
+          ! [ -z "$DEBUG" ] && echo "LAST_COMMIT_MSG=$LAST_COMMIT_MSG" || true
+
+          echo "$LAST_COMMIT_MSG" | grep -qE "$CI_SKIP_REGEX"
+          [ $? -ne 0 ] && CI_SKIP=false || CI_SKIP=true
+          ! [ -z "$DEBUG" ] && echo "CI_SKIP=$CI_SKIP" || true
+
+          [ "$CI_SKIP" = 'true' ] || echo "$LAST_COMMIT_MSG" | grep -qE "$CD_SKIP_REGEX"
+          [ $? -ne 0 ] && CD_SKIP=false || CD_SKIP=true
+          ! [ -z "$DEBUG" ] && echo "CD_SKIP=$CD_SKIP" || true
+
+          echo "::set-output name=should-skip-ci::$CI_SKIP"
+          ! [ -z "$DEBUG" ] && echo "set-output name=should-skip-ci::$CI_SKIP" || true
+
+          echo "::set-output name=should-skip-cd::$CD_SKIP"
+          ! [ -z "$DEBUG" ] && echo "set-output name=should-skip-cd::$CD_SKIP" || true
 
       - name: Determine matrixes
-        if: steps.skip-ci.outputs.should-skip != 'true'
+        if: steps.skip.outputs.should-skip-ci != 'true'
         id: set-matrix
         run: |
           echo "::set-output name=node-matrix::{\"node\":[$NODE_TEST_VERSIONS, \"$NODE_CURRENT_VERSION\"]}"
           echo "::set-output name=webpack-matrix::{\"webpack\":[$WEBPACK_TEST_VERSIONS]}"
+          ! [ -z "$DEBUG" ] && echo "set-output name=node-matrix::{\"node\":[$NODE_TEST_VERSIONS, \"$NODE_CURRENT_VERSION\"]}" || true
+          ! [ -z "$DEBUG" ] && echo "set-output name=webpack-matrix::{\"webpack\":[$WEBPACK_TEST_VERSIONS]}" || true
 
       - name: Gather branch metadata
-        if: steps.skip-ci.outputs.should-skip != 'true'
+        if: steps.skip.outputs.should-skip-ci != 'true'
         uses: nelonoel/branch-name@v1.0.1
 
       - name: Determine current-branch
-        if: steps.skip-ci.outputs.should-skip != 'true'
+        if: steps.skip.outputs.should-skip-ci != 'true'
         id: branch
-        run: echo "::set-output name=current-branch::$BRANCH_NAME"
+        run: |
+          echo "::set-output name=current-branch::$BRANCH_NAME"
+          ! [ -z "$DEBUG" ] && echo "set-output name=current-branch::$BRANCH_NAME" || true
 
       - name: Verify repository owner against whitelist
-        if: steps.skip-ci.outputs.should-skip != 'true'
+        if: steps.skip.outputs.should-skip-ci != 'true'
         id: owner
         run: |
           set +e
@@ -97,19 +127,22 @@ jobs:
           REPO='${{ github.repository }}'
           node -e "process.exit('$WL'.toLowerCase().split(',').some(o => '$REPO'.toLowerCase().startsWith(o.trim() + '/')) ? 0 : 1)"
           echo "::set-output name=is-whitelisted::$([ $? -eq 0 ] && echo 'true' || echo 'false')"
+          ! [ -z "$DEBUG" ] && echo "set-output name=is-whitelisted::$([ $? -eq 0 ] && echo 'true' || echo 'false')" || true
 
       - name: Use node ${{ env.NODE_CURRENT_VERSION }}
-        if: steps.skip-ci.outputs.should-skip != 'true'
+        if: steps.skip.outputs.should-skip-ci != 'true'
         uses: actions/setup-node@v2.1.4
         with:
           node-version: ${{ env.NODE_CURRENT_VERSION }}
 
-      - name: Gather package.json script metadata
-        if: steps.skip-ci.outputs.should-skip != 'true'
+      - name: Gather remaining metadata
+        if: steps.skip.outputs.should-skip-ci != 'true'
         id: data
         run: |
           set +e
           NPMR=`npm run list-tasks`
+
+          ! [ -z "$DEBUG" ] && echo 'NPMR=' $NPMR || true
 
           if [ $? -ne 0 ]; then
             echo '::error::`npm run list-tasks` failed'
@@ -125,18 +158,30 @@ jobs:
           if [ $? -eq 0 ]; then HAS_NODE=true; else HAS_NODE=false; fi
           echo $NPMR | grep -qe '\stest-integration-externals\s'
           if [ $? -eq 0 ]; then HAS_IEXT=true; else HAS_IEXT=false; fi
-          echo $NPMR | grep -qe '\stest-integration-browser\s'
+          echo $NPMR | grep -qe '\stest-integration-client\s'
           if [ $? -eq 0 ]; then HAS_BWSR=true; else HAS_BWSR=false; fi
           echo $NPMR | grep -qe '\stest-integration-webpack\s'
           if [ $? -eq 0 ]; then HAS_WEBP=true; else HAS_WEBP=false; fi
+          echo $NPMR | grep -qe '\sdeploy\s'
+          if [ $? -eq 0 ]; then HAS_DPLY=true; else HAS_DPLY=false; fi
 
           echo "::set-output name=has-release-config::$HAS_RCNF"
           echo "::set-output name=has-docs::$HAS_DOCS"
           echo "::set-output name=has-externals::$HAS_EXTS"
           echo "::set-output name=has-integration-node::$HAS_NODE"
           echo "::set-output name=has-integration-externals::$HAS_IEXT"
-          echo "::set-output name=has-integration-browser::$HAS_BWSR"
+          echo "::set-output name=has-integration-client::$HAS_BWSR"
           echo "::set-output name=has-integration-webpack::$HAS_WEBP"
+          echo "::set-output name=has-deploy::$HAS_DPLY"
+
+          ! [ -z "$DEBUG" ] && echo "set-output name=has-release-config::$HAS_RCNF" || true
+          ! [ -z "$DEBUG" ] && echo "set-output name=has-docs::$HAS_DOCS" || true
+          ! [ -z "$DEBUG" ] && echo "set-output name=has-externals::$HAS_EXTS" || true
+          ! [ -z "$DEBUG" ] && echo "set-output name=has-integration-node::$HAS_NODE" || true
+          ! [ -z "$DEBUG" ] && echo "set-output name=has-integration-externals::$HAS_IEXT" || true
+          ! [ -z "$DEBUG" ] && echo "set-output name=has-integration-client::$HAS_BWSR" || true
+          ! [ -z "$DEBUG" ] && echo "set-output name=has-integration-webpack::$HAS_WEBP" || true
+          ! [ -z "$DEBUG" ] && echo "set-output name=has-deploy::$HAS_DPLY" || true
 
           if [ "$HAS_EXTS" != "$HAS_IEXT" ]; then
             echo '::error::expected both 1) `build-externals` and 2) `test-integration-externals` scripts to be defined in package.json'
@@ -150,6 +195,7 @@ jobs:
   check-audit:
     name: '[CI] check-audit'
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     needs: metadata
     if: needs.metadata.outputs.should-skip-ci != 'true'
     steps:
@@ -174,6 +220,7 @@ jobs:
   lint:
     name: '[CI] lint'
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     needs: metadata
     if: needs.metadata.outputs.should-skip-ci != 'true'
     steps:
@@ -201,7 +248,11 @@ jobs:
           restore-keys: npm-${{ runner.os }}-
 
       - name: Install CI dependencies
-        run: npm ci
+        run: |
+          npm ci
+          PEER_DEPS=$(node -e 'console.log(Object.entries(require("./package.json").peerDependencies || {}).map(([p,v]) => `${p}@${v}`).join(" "))')
+          ! [ -z "$DEBUG" ] && echo "(install targets) PEER_DEPS='$PEER_DEPS'" || true
+          ! [ -z "$PEER_DEPS" ] && npm install --no-save $PEER_DEPS || true
 
       - name: Lint
         run: npm run lint
@@ -209,6 +260,7 @@ jobs:
   test-unit:
     name: '[CI] test-unit'
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     needs: metadata
     if: needs.metadata.outputs.should-skip-ci != 'true'
     steps:
@@ -216,7 +268,7 @@ jobs:
         uses: actions/checkout@v2
         with:
           # ? codecov-action requires access to git history
-          fetch-depth: 0 #1000 https://github.com/mstachniuk/ci-skip#use-cases
+          fetch-depth: 0
           persist-credentials: false
 
       - name: Reconfigure git auth
@@ -238,7 +290,11 @@ jobs:
           restore-keys: npm-${{ runner.os }}-
 
       - name: Install CI dependencies
-        run: npm ci
+        run: |
+          npm ci
+          PEER_DEPS=$(node -e 'console.log(Object.entries(require("./package.json").peerDependencies || {}).map(([p,v]) => `${p}@${v}`).join(" "))')
+          ! [ -z "$DEBUG" ] && echo "(install targets) PEER_DEPS='$PEER_DEPS'" || true
+          ! [ -z "$PEER_DEPS" ] && npm install --no-save $PEER_DEPS || true
 
       - name: Test unit
         run: npm run test-unit
@@ -257,6 +313,7 @@ jobs:
   test-integration-node:
     name: '[CI] test-integration-node'
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     needs: metadata
     if: |
       needs.metadata.outputs.should-skip-ci != 'true'
@@ -289,17 +346,24 @@ jobs:
           restore-keys: npm-${{ runner.os }}-
 
       - name: Install CI dependencies
-        run: npm ci
+        run: |
+          npm ci
+          PEER_DEPS=$(node -e 'console.log(Object.entries(require("./package.json").peerDependencies || {}).map(([p,v]) => `${p}@${v}`).join(" "))')
+          ! [ -z "$DEBUG" ] && echo "(install targets) PEER_DEPS='$PEER_DEPS'" || true
+          ! [ -z "$PEER_DEPS" ] && npm install --no-save $PEER_DEPS || true
 
       - name: Build distributables
         run: npm run build-dist
 
       - name: Test integration
+        env:
+          MATRIX_NODE_VERSION: ${{ matrix.node }}
         run: npm run test-integration-node
 
   test-integration-externals:
     name: '[CI] test-integration-externals'
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     needs: metadata
     if: |
       needs.metadata.outputs.should-skip-ci != 'true'
@@ -332,21 +396,28 @@ jobs:
           restore-keys: npm-${{ runner.os }}-
 
       - name: Install CI dependencies
-        run: npm ci
+        run: |
+          npm ci
+          PEER_DEPS=$(node -e 'console.log(Object.entries(require("./package.json").peerDependencies || {}).map(([p,v]) => `${p}@${v}`).join(" "))')
+          ! [ -z "$DEBUG" ] && echo "(install targets) PEER_DEPS='$PEER_DEPS'" || true
+          ! [ -z "$PEER_DEPS" ] && npm install --no-save $PEER_DEPS || true
 
       - name: Build externals
         run: npm run build-externals
 
       - name: Test integration
+        env:
+          MATRIX_NODE_VERSION: ${{ matrix.node }}
         run: npm run test-integration-externals
 
-  test-integration-browser:
-    name: '[CI] test-integration-browser'
+  test-integration-client:
+    name: '[CI] test-integration-client'
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     needs: metadata
     if: |
       needs.metadata.outputs.should-skip-ci != 'true'
-      && needs.metadata.outputs.has-integration-browser == 'true'
+      && needs.metadata.outputs.has-integration-client == 'true'
     steps:
       - name: Checkout
         uses: actions/checkout@v2
@@ -372,17 +443,22 @@ jobs:
           restore-keys: npm-${{ runner.os }}-
 
       - name: Install CI dependencies
-        run: npm ci
+        run: |
+          npm ci
+          PEER_DEPS=$(node -e 'console.log(Object.entries(require("./package.json").peerDependencies || {}).map(([p,v]) => `${p}@${v}`).join(" "))')
+          ! [ -z "$DEBUG" ] && echo "(install targets) PEER_DEPS='$PEER_DEPS'" || true
+          ! [ -z "$PEER_DEPS" ] && npm install --no-save $PEER_DEPS || true
 
       - name: Build distributables
         run: npm run build-dist
 
       - name: Test integration
-        run: npm run test-integration-browser
+        run: npm run test-integration-client
 
   test-integration-webpack:
     name: '[CI] test-integration-webpack'
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     needs: metadata
     if: |
       needs.metadata.outputs.should-skip-ci != 'true'
@@ -415,15 +491,18 @@ jobs:
           restore-keys: npm-${{ runner.os }}-
 
       - name: Install CI dependencies
-        run: npm ci
+        run: |
+          npm ci
+          PEER_DEPS=$(node -e 'console.log(Object.entries(require("./package.json").peerDependencies || {}).map(([p,v]) => `${p}@${v}`).join(" "))')
+          ! [ -z "$DEBUG" ] && echo "(install targets) PEER_DEPS='$PEER_DEPS'" || true
+          ! [ -z "$PEER_DEPS" ] && npm install --no-save $PEER_DEPS || true
 
       - name: Build distributables
         run: npm run build-dist
 
-      - name: Install webpack@${{ matrix.webpack }}
-        run: npm install webpack@${{ matrix.webpack }}
-
       - name: Test integration
+        env:
+          MATRIX_WEBPACK_VERSION: ${{ matrix.webpack }}
         run: npm run test-integration-webpack
 
   # * === The end of CI (build and test) and the beginning of CD (deploy) === *
@@ -437,9 +516,10 @@ jobs:
   build:
     name: '[CD] build'
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     needs: metadata
     if: |
-      needs.metadata.outputs.should-skip-ci != 'true'
+      needs.metadata.outputs.should-skip-cd != 'true'
       && github.event_name != 'pull_request'
       && needs.metadata.outputs.has-proper-owner == 'true'
       && needs.metadata.outputs.has-release-config == 'true'
@@ -468,12 +548,13 @@ jobs:
           restore-keys: npm-${{ runner.os }}-
 
       - name: Install CI dependencies
-        run: npm ci
+        run: |
+          npm ci
+          PEER_DEPS=$(node -e 'console.log(Object.entries(require("./package.json").peerDependencies || {}).map(([p,v]) => `${p}@${v}`).join(" "))')
+          ! [ -z "$DEBUG" ] && echo "(install targets) PEER_DEPS='$PEER_DEPS'" || true
+          ! [ -z "$PEER_DEPS" ] && npm install --no-save $PEER_DEPS || true
 
-      - name: Sort package.json
-        run: npx sort-package-json
-
-      - name: Format source
+      - name: Pre source formatting
         run: npm run format
 
       - name: Build distributables
@@ -482,6 +563,9 @@ jobs:
       - name: Build documentation
         if: needs.metadata.outputs.has-docs == 'true'
         run: npm run build-docs
+
+      - name: Run formatting
+        run: npm run format
 
       - name: Cache build
         uses: actions/cache@v2
@@ -496,6 +580,7 @@ jobs:
   release:
     name: '[CD] release'
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     needs:
       - build
       - check-audit
@@ -504,7 +589,7 @@ jobs:
       - metadata
       - test-integration-node
       - test-integration-externals
-      - test-integration-browser
+      - test-integration-client
       - test-integration-webpack
     if: |
       always()
@@ -514,13 +599,13 @@ jobs:
       && needs.test-unit.result == 'success'
       && (needs.metadata.outputs.has-integration-node != 'true' || needs.test-integration-node.result == 'success')
       && (needs.metadata.outputs.has-integration-externals != 'true' || needs.test-integration-externals.result == 'success')
-      && (needs.metadata.outputs.has-integration-browser != 'true' || needs.test-integration-browser.result == 'success')
+      && (needs.metadata.outputs.has-integration-client != 'true' || needs.test-integration-client.result == 'success')
       && (needs.metadata.outputs.has-integration-webpack != 'true' || needs.test-integration-webpack.result == 'success')
     steps:
       - name: Checkout
         uses: actions/checkout@v2
         with:
-          fetch-depth: 0 #1000 https://github.com/mstachniuk/ci-skip#use-cases
+          fetch-depth: 0
           persist-credentials: false
 
       - name: Reconfigure git auth
@@ -564,6 +649,7 @@ jobs:
           NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
           SHOULD_UPDATE_CHANGELOG:
             ${{ needs.metadata.outputs.current-branch == 'main' }}
+          SHOULD_DEPLOY: ${{ needs.metadata.outputs.has-deploy == 'true' }}
           GIT_AUTHOR_NAME: ${{ env.CI_COMMITTER_NAME }}
           GIT_AUTHOR_EMAIL: ${{ env.CI_COMMITTER_EMAIL }}
           GIT_COMMITTER_NAME: ${{ env.CI_COMMITTER_NAME }}
